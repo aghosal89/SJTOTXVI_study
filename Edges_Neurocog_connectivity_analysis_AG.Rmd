@@ -1,0 +1,741 @@
+---
+title: "On some connectivity edges related to IQ, Working Memory and Attention"
+author: "Aritra Ghosal"
+date: "2025-05-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+value_threshold <- function(x=NA, thresh=NA) {
+  
+  if( min(x)> thresh) {
+    return("Y") 
+  } else {
+    return("N")
+  }
+}
+
+#x<- y_1[1,379, lr]
+#y<- y_1[1,379, shr]
+#method=1;
+
+#node_matching<- function(coord1=NULL, coord2=NULL) {
+#  if(coord1[1]==coord2[1] & coord1[2]==coord2[2]) {
+#    return("Match") 
+#  } else {
+#    return("No_Match")
+#  }
+#}
+
+icc_fun <- function(x1=NA, x2=NA, l=NA) {
+  
+  x1n<- x1[l]
+  x2n<- x2[l]
+  
+  # compute the intra-class correlation
+  c<- irr::icc(cbind(x1, x2),  model="oneway")
+  
+  return(c$value)
+}  
+
+###############################################################
+# The following is the description of the function 'perc_edge' 
+###############################################################
+
+## Inputs
+
+# node_x      = the x-coordinate of the brain ROI. 
+# node_y      = the y-coordinate of the brain ROI. 
+# cm          = the 379 x 379 connectivity matrix from either the time 1 or 2.
+# cntrl_array = the array position vector for the control group.
+# pos         = the position of the patient in the array of risk groups.
+
+## Output Values
+
+# pvalue = the probability of observing a more extreme observation on either the 
+#          upper or the lower tail of the distribution of control weights.
+
+# tail   = A bivariate indicator with values 'upper' or 'lower', denoting if the 
+#          weight whose p-value is computed is situated at either the upper or the
+#          lower tail of the control weight distribution.
+
+perc_edge <- function(node_x=NULL, node_y=NULL, cm=NULL, cntrl_array=NULL, 
+                     pos=NULL) {
+  
+  ay <- cm[node_x, node_y, cntrl_array]
+  #aycdf <- ecdf(ay)
+  
+  l_1<- length(which(ay <= cm[node_x, node_y, pos] )) / length(cn)
+  
+  l_2<- length(which(ay > cm[node_x, node_y, pos] )) / length(cn)
+  
+  if(l_1 < l_2) {
+    return(list(pvalue= l_1, tail="lower"))
+  } else {
+    return(list(pvalue= l_2, tail="upper"))
+  }
+}
+
+# set working directory
+setwd("/Users/aghosal/Documents/MatchedT16vsCon_MRTrix")
+
+# read the libraries in R
+library('gdata')
+library("ggplot2")
+library('reshape')
+library('viridis')
+library('MASS')
+library('ggpubr')
+#library('circlize')
+library('transport')
+library('latex2exp')
+library('interactions')
+
+# read the file names for the connectivity matrices
+mrnc <- read.csv("MRN_control.csv", header = TRUE)
+mrnp <- read.csv("MRN_patient.csv", header = TRUE)
+
+# Read the data of ROIs and nodes, lobes of the brain
+node_labels <- read.csv("connectome_labels.csv", header =TRUE)
+
+# the dimension of the connectivity matrix 
+d <- 379
+
+# number of control participants
+nc<- 59
+
+# number of patient participants
+np<- 335
+
+# measurement of connectivity of the control participants 
+# time 1 (control group)
+y_c_1 <- array(NA, dim=c(d, d, nc))
+
+# time 2 (control group)
+y_c_2 <- array(NA, dim=c(d, d, nc))
+
+# time 1 (patient group)
+y_p_1 <- array(NA, dim=c(d, d, np))
+
+# time 2 (patient group)
+y_p_2 <- array(NA, dim=c(d, d, np))
+
+for (i in 1:nc) {
+  y_c_1[,,i] <-as.matrix(read.csv(paste(c("Con_", mrnc[i,], "-1_hcpmmp3",".csv"), collapse =""), header = TRUE)[,-1])
+  y_c_2[,,i] <- as.matrix(read.csv(paste(c("Con_", mrnc[i,], "-3_hcpmmp3",".csv"), collapse =""), header = TRUE)[,-1])
+}
+
+for (i in 1:np) {
+  y_p_1[,,i] <- as.matrix(read.csv(paste(c("Pat_", mrnp[i,], "-1_hcpmmp3", ".csv"), collapse =""), header = TRUE)[,-1])
+  y_p_2[,,i] <- as.matrix(read.csv(paste(c("Pat_", mrnp[i,], "-2_hcpmmp3", ".csv"), collapse =""), header = TRUE)[,-1])
+}
+
+y_1 <- array(NA, dim= c(d, d, nc+np))
+
+y_1[,,1:nc] <- y_c_1
+y_1[,,c(60:394)] <- y_p_1
+
+y_2 <- array(NA, dim= c(d,d, nc+np))
+
+y_2[,,1:nc] <- y_c_2
+y_2[,,c(60:394)] <- y_p_2
+
+# then obtain the matrix of connectivity differences
+y_diff <- y_2 - y_1
+
+# Assign names to the 3rd dimension of the connectivity matrices
+dimnames(y_1)[[3]] <- c(mrnc$MRN, mrnp$MRN)
+dimnames(y_2)[[3]] <- c(mrnc$MRN, mrnp$MRN)
+dimnames(y_diff)[[3]] <- c(mrnc$MRN, mrnp$MRN)
+
+# Read the covariate data for analysis of the connectivity matrices
+Xdat <- read.csv("Covariate_data_forregression.csv", header=TRUE)
+Xdat$Sex <- as.factor(ifelse(Xdat$Sex=="2", "M", "F"))
+Xdat <- within(Xdat, Risk <- relevel(as.factor(Risk), ref = "C"))
+#Xdat$Risk
+
+Xdat$Group.ITT <- NA
+
+Xdat$Group.ITT <- sapply(1:nrow(Xdat), function(i) {
+  
+  #TeX("SHR$\\leq 26$", output="character"))
+  if(Xdat$Risk[i] == "LR" & Xdat$IT.total[i] <= 20 ) {"LR<20"}
+  else if (Xdat$Risk[i] == "LR" & Xdat$IT.total[i] > 20) {"LR>=20"}
+  else if (Xdat$Risk[i] == "SHR" & Xdat$IT.total[i] <= 26) {"SHR<27"}
+  else if (Xdat$Risk[i] == "SHR" & Xdat$IT.total[i] > 26) {"SHR>=27"}
+  else if (Xdat$Risk[i] == "C") {"C"}
+  
+})
+
+# this file contains the neuro-cognitive scores of the patients
+Xdat2 <- read.csv("Xdat2.csv", header = T)
+X3 <- merge(Xdat, Xdat2, by="MRN")
+X3 <- X3[,-c(2:12)]
+
+tsq <- 0.1
+
+# get the indexes corresponding to the risk categories in our study
+cn <- which(Xdat$Risk=="C")
+lr <- which(Xdat$Risk=="LR")
+shr <- which(Xdat$Risk=="SHR")
+l <- length(y_1[1,1,])
+
+# get the MRNs for the patients in the LR and SHR groups 
+mrn_lr <- Xdat$MRN[lr]
+mrn_shr <- Xdat$MRN[shr]
+
+# we shortlist the edges with minimum value at time 2, since the patients have 
+# gone through a recovery time
+
+value_count <- apply(y_2[,,cn], c(1,2), FUN =value_threshold, thresh =tsq)
+
+value_count1 <- data.frame(value= c(value_count), X1 = rep(seq(1, 379), 379), 
+                           X2= rep(seq(1,379), each= 379) ) 
+
+vc<- subset(value_count1, value=="Y" & X1> X2)[,c("X1","X2")]
+
+vc_symm<- subset(value_count1, value=="Y")[,c("X1","X2")]
+
+vc1_tab <- subset(value_count1, X1> X2)
+a<- table(vc1_tab$value)
+
+# create the vector for the risk ID of the patients
+Risk_id <- rep(NA, len= l)
+Risk_id[cn]<- "C"
+Risk_id[lr]<- "LR"
+Risk_id[shr]<- "SHR"
+
+y_cor_control <- data.frame( ICC= sapply(1:nrow(vc_symm), 
+                  function(i) icc_fun(y_1[vc_symm$X1[i],
+                  vc_symm$X2[i],] , y_2[vc_symm$X1[i], vc_symm$X2[i],], l=cn) ), 
+                  Row= vc_symm$X1, Column= vc_symm$X2)
+
+y_cor_control1 <- subset(y_cor_control[,c(1:3)], ICC >= 0.5)
+
+y_cor_control2 <- subset(y_cor_control1, Row > Column) # remove the repeated points
+
+y_cor_control4 <- y_cor_control2
+y_cor_control4$Row <- as.factor(y_cor_control4$Row)
+y_cor_control4$Column <- as.factor(y_cor_control4$Column)
+
+# get the p-value for every connectivity differences
+m21 <- matrix(NA, nrow= l, ncol= nrow(y_cor_control2))   
+# get the tail position w.r.t. the control distribution for every connectivity
+m21_tail <- matrix(NA, nrow= l, ncol= nrow(y_cor_control2))
+
+# difference of connectivity matrix at difference
+for (i1 in 1:nrow(m21)) {
+  for (i2 in 1:ncol(m21)) {
+    temp <- perc_edge(node_x = y_cor_control2$Row[i2], 
+                              node_y = y_cor_control2$Column[i2], cm = y_diff, 
+                              cntrl_array = cn, pos = i1)
+    
+    m21[i1, i2] <- temp$pvalue
+    
+    m21_tail[i1, i2] <- temp$tail
+  }
+}
+
+m21 <- cbind.data.frame(MRN= Xdat$MRN,Risk_id, m21)
+
+m21_risk <- data.frame(subset(m21, Risk_id != "C"))
+
+m21_tail <- cbind.data.frame(MRN= Xdat$MRN, Risk_id, m21_tail)
+
+m21_rtail <- data.frame(subset(m21_tail, Risk_id != "C"))
+
+# x1 is the number of significant patients in the time 1.
+x21 <- sapply(3:ncol(m21_risk), function(i) {
+  
+  # find out for that edge which patients are extreme
+  a1 <- which(m21_risk[,i] < 0.05)
+  
+  # find out the LR among those extreme patients
+  a2 <- length(which(m21_risk[a1, 2] == "LR"))
+  
+  # find out the SHR among those extreme patients
+  a3 <- length(which(m21_risk[a1, 2] == "SHR")) 
+  
+  # find out among the LR extreme patients, those are in the upper tail of the control dist
+  a2_utail <- length(which(m21_risk[a1, 2] == "LR" & m21_rtail[a1, i] == "upper")) 
+  
+  # find out among the LR extreme patients, those are in the lower tail of the control dist
+  a2_ltail <- length(which(m21_risk[a1, 2] == "LR" & m21_rtail[a1, i] == "lower")) 
+  
+  # find out among the LR extreme patients, those are in the upper tail of the control dist
+  a3_utail <- length(which(m21_risk[a1, 2] == "SHR" & m21_rtail[a1, i] == "upper")) 
+  
+  # find out among the LR extreme patients, those are in the lower tail of the control dist
+  a3_ltail <- length(which(m21_risk[a1, 2] == "SHR" & m21_rtail[a1, i] == "lower")) 
+  
+  a <- matrix(c(length(a1), a2, a2_utail, a2_ltail, a3, a3_utail, a3_ltail), nrow = 1)
+  
+  return(a)
+})
+
+# For connectivity difference we perform this operation:
+
+# Now we shortlist those edges that have extreme patients count 70 or more 
+roi_diff21 <- cbind.data.frame(Edges= seq(1: nrow(y_cor_control2)), y_cor_control2[, -1]) 
+
+# collect the number of extreme patients in the edge
+#which(x21[1,] >=70)
+roi_diff21$ExtremePatients <- x21[1, ] 
+roi_diff21$LR <- x21[2, ] 
+roi_diff21$LR_UT <- x21[3, ]
+roi_diff21$LR_LT <- x21[4, ]
+roi_diff21$SHR <- x21[5, ] 
+roi_diff21$SHR_UT <- x21[6, ]
+roi_diff21$SHR_LT <- x21[7, ]
+
+roi_diff21$Lobe_ROI2 <- roi_diff21$Lobe_ROI1 <- roi_diff21$ROI2 <- roi_diff21$ROI1 <- NA 
+
+roi_diff21$Region_ROI2 <- roi_diff21$Region_ROI1 <- NA
+
+# collect the ROI pair in the edge
+for (i in 1:nrow(roi_diff21)) {
+  roi_diff21$ROI1[i] <- paste(node_labels[roi_diff21[i,"Row"], "Side"], 
+                            node_labels[roi_diff21[i,"Row"], "Name"], sep =" ")
+  roi_diff21$ROI2[i] <- paste(node_labels[roi_diff21[i,"Column"], "Side"], 
+                            node_labels[roi_diff21[i,"Column"], "Name"], sep =" ")
+  
+  roi_diff21$Lobe_ROI1[i] <- node_labels[roi_diff21[i,"Row"], "Lobe"]
+  roi_diff21$Lobe_ROI2[i] <- node_labels[roi_diff21[i,"Column"], "Lobe"]
+  
+  roi_diff21$Region_ROI1[i] <- node_labels[roi_diff21[i,"Row"], "Region.Name"]
+  roi_diff21$Region_ROI2[i] <- node_labels[roi_diff21[i,"Column"], "Region.Name"]
+  
+  #print(i)
+  
+}
+
+# next we order the edges from highest to the lowest count of extreme patients
+roi_diff21 <- roi_diff21[order(-roi_diff21$ExtremePatients),]
+rownames(roi_diff21) <- NULL
+
+write.csv(roi_diff21, "Edges_Connectivity_difference.csv")
+
+# read the neurocognitive data first~
+ndat <- read.csv("Neurocog_scores.csv", header = TRUE)
+```
+
+### IQ score analysis for some of the connectivity edges
+
+First, we check that the IQ scores of the patients. For the patients there are IQ scores taken for the two time points of the study.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+########################################################
+# first we try to check if the IQ scores were the same
+
+temp20 <- ndat[, c(1,7)]  # choose the neurocog score and the MRN variable
+
+# choose the neurocog scores that are non-empty
+temp21 <- temp20[which(temp20[,2] != "."), ]
+
+mrn21 <- temp21$MRN  # get MRNs for patients whose neurocog scores are non-empty
+
+temp22 <- X3[, c(1,3)] # get the IQ scores at re-induction 1 phase
+
+temp23 <- merge(temp21, temp22, by= "MRN")
+temp24 <- merge(temp23, Xdat, by= "MRN")
+temp25 <- na.omit(temp24)
+
+t.test(temp25$re1.sb5.estiq.ss, as.numeric(temp25$sb5.estIQ.ss), paired = T, 
+       alternative = "greater")
+
+```
+
+Hence, the IQ scores at Reinduction I are higher than those of the 120 week scores for the 174 patients. We check the plots as follows:
+
+```{r, echo=FALSE}
+
+plotdat1 <- cbind.data.frame(IQ = c(temp25$re1.sb5.estiq.ss, as.numeric(temp25$sb5.estIQ.ss)),
+                             Time= rep(c("RE-I","Week120"), each= length(temp25$re1.sb5.estiq.ss)) )
+
+par(mfrow=c(1,1))                             
+boxplot(IQ ~ Time, data = plotdat1, pch=16, cex=0.6)
+
+plotdat2 <- cbind.data.frame("IQ difference" = as.numeric(temp25$re1.sb5.estiq.ss)- as.numeric(temp25$sb5.estIQ.ss) , Risk= temp25$Risk, "Risk & ITT"= temp25$Group.ITT,
+                             Age= temp25$Age, Sex= temp25$Sex)
+
+boxplot(`IQ difference` ~ `Risk & ITT`, data = plotdat2, pch=16, cex=0.6)
+abline(h=0, col="red")
+
+```
+
+The differences of the IQ scores were computed as: scores at RE I- scores at 120 weeks of continuation. We noticed that the group "SHR<27", which consists of the patients in the "SHR" group with the scores $ITT < 27$ have the IQ score changes significantly lower than those of the other groups namely "LR<20" (p-value= $0.0391$, df= $109$), "LR>=20" (p-value= $0.046$, df= $71$), "SHR>=27" (p-value= $0.018$, df= $89$). Among the other three groups, no significant differences were found at significance level $0.05$. No significant differences were found in terms of the sex of the patient either.
+
+Next, we proceed to regress the IQ differences on the connectivity differences and gather information on the edges where the connectivity is a significant predictor of the IQ score differences. We also use the Risk group with the ITT score differentiation as the categorical predictor in the regression. We also noticed that the interaction effect of the connectivity differences and the Risk group - ITT categorical variable is a significant predictor of the IQ score differences, i.e. the estimated IQ score differences are different for the different levels of the Risk group - ITT categorical variable. However, we present the results for those connectivity edges where the adjusted $R^2$ of the regression were the highest. 
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+roi_diff_reg <- NA
+
+for (j in 1:nrow(roi_diff21)) {
+
+y1d <- y_diff[roi_diff21$Row[j], roi_diff21$Column[j], ]
+yd <- subset(y1d, names(y1d) %in% temp25$MRN)
+
+dat10 <- cbind.data.frame(temp25, "Connectivity difference"= yd, 
+                "IQ difference"= as.numeric(temp25$re1.sb5.estiq.ss)- as.numeric(temp25$sb5.estIQ.ss) )
+  
+ft <- (lm(`IQ difference` ~ yd*Group.ITT, data = dat10))
+ft1 <- (lm(`IQ difference` ~ yd+ Group.ITT, data = dat10))
+
+aoft <- anova(ft, ft1)
+ft_summ <- summary(lm(`IQ difference` ~ yd*Group.ITT, data = dat10))
+ft1_summ <- summary(lm(`IQ difference` ~ yd+ Group.ITT, data = dat10))
+
+Fpv <- pf(ft_summ$fstatistic[1], ft_summ$fstatistic[2], ft_summ$fstatistic[3], lower.tail = F)
+
+# 
+if(Fpv< 0.05 & aoft$`Pr(>F)`[2] <0.05) {
+#print(j)
+roi_diff_reg <- rbind.data.frame(roi_diff_reg, data.frame("Edge"= roi_diff21$Edges[j],
+                                                          "Row"= roi_diff21$Row[j],
+                                                          "Column"= roi_diff21$Column[j],
+                                                          "Intercept"= ft_summ$coefficients[1,1],
+                                                          "Connectivity"= ft_summ$coefficients[2,1],
+                                                          "LR,ITTge20"= ft_summ$coefficients[3,1],
+                                                          "SHR,ITTle26"= ft_summ$coefficients[4,1],
+                                                          "SHR,ITTge27"= ft_summ$coefficients[5,1],
+                                                          "Yd:LR,ITTge20"= ft_summ$coefficients[6,1],
+                                                          "Yd:SHR,ITTle26"= ft_summ$coefficients[7,1],
+                                                          "Yd:SHR,ITTge27"=ft_summ$coefficients[8,1],
+                                                          "Adj.R2"= ft_summ$adj.r.squared,
+                                                          "Fpvalue"=Fpv))
+
+}
+}
+
+roi_diff_reg <- roi_diff_reg[-1,]
+
+write.csv(roi_diff_reg, "ROI_regression_IQ.csv")
+
+# we order the connectivity edges by the decreasing order the adjusted R-squared of the regression
+roi_diff_reg2 <- roi_diff_reg[order(-roi_diff_reg$Adj.R2),]
+
+
+y1d <- y_diff[roi_diff_reg2$Row[1], roi_diff_reg2$Column[1], ]
+yd <- subset(y1d, names(y1d) %in% temp25$MRN)
+
+dat10 <- cbind.data.frame(temp25, "Connectivity difference"= yd, 
+          "IQ difference"= as.numeric(temp25$sb5.estIQ.ss) - temp25$re1.sb5.estiq.ss)
+
+ft <- (lm(`IQ difference` ~ `Connectivity difference`*Group.ITT, data = dat10))
+
+ft_summ <- summary(ft)
+```
+
+#### Interaction plot at Right Area PFcm vs. Right Area OP2-3/VS, adjusted $R^2=9\%.$
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+interact_plot(model =ft,  pred = `Connectivity difference`, 
+                            modx = Group.ITT, interval =TRUE)
+
+```
+
+#### Interaction plot at Right Dorsal Area 24d vs. Right Area 5m Ventral, adjusted $R^2=7.6\%.$
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+y1d <- y_diff[roi_diff_reg2$Row[2], roi_diff_reg2$Column[2], ]
+yd <- subset(y1d, names(y1d) %in% temp25$MRN)
+
+dat10 <- cbind.data.frame(temp25, "Connectivity difference"= yd, 
+          "IQ difference"= as.numeric(temp25$sb5.estIQ.ss) - temp25$re1.sb5.estiq.ss)
+
+ft <- (lm(`IQ difference` ~ `Connectivity difference`*Group.ITT, data = dat10))
+
+ft_summ <- summary(ft)
+
+interact_plot(model =ft,  pred = `Connectivity difference`, 
+                            modx = Group.ITT, interval =TRUE)
+
+```
+
+#### Interaction plot at Left Area PHT vs. Left Area TE1 posterior, adjusted $R^2=7\%.$
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+y1d <- y_diff[roi_diff_reg2$Row[3], roi_diff_reg2$Column[3], ]
+yd <- subset(y1d, names(y1d) %in% temp25$MRN)
+
+dat10 <- cbind.data.frame(temp25, "Connectivity difference"= yd, 
+          "IQ difference"= as.numeric(temp25$sb5.estIQ.ss) - temp25$re1.sb5.estiq.ss)
+
+ft <- (lm(`IQ difference` ~ `Connectivity difference`*Group.ITT, data = dat10))
+
+ft_summ <- summary(ft)
+
+interact_plot(model =ft,  pred = `Connectivity difference`, 
+                            modx = Group.ITT, interval =TRUE)
+
+```
+
+### Working Memory score analysis for some of the connectivity edges:
+
+To access the performance in the working memory, we have two criteria:
+
+  - Wechsler's digit span test (higher score is better)
+  - Woodcock Johnson 3: Auditory WM test (higher score is better)
+
+Both the above scores are available for the time $T_2$ only. For this analysis we will consider 
+the connectivity edges relevant to the working memory only.
+
+#### Wechsler score
+
+Here are the wechsler score distributions for each risk and ITT categories:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+# the following are the connectivity edges involved in the working memory of brain
+wmem_edges <- c(403,150,159,210,401,400,75,203,254,600,61,286,551,525,524,287,526,
+                253,118,454,553,554)
+
+i <- 8 # obtain the wechsler scores: higher is better
+#i<- 9 # obtain the WJ3 auditory memory score: higher is better
+
+temp30 <- ndat[, c(1,i)]  # choose the neurocog score and the MRN variable
+
+# choose the neurocog scores that are non-empty
+temp31 <- temp30[which(temp30[,2] != "."), ]
+
+#mrn31 <- temp31$MRN  # get MRNs for patients whose neurocog scores are non-empty
+
+temp32 <- X3[, c(1,4,5)]
+
+temp33 <- merge(temp31, temp32, by= "MRN")[, c(1,2)]
+temp34 <- merge(temp33, Xdat, by= "MRN")
+#temp35 <- na.omit(temp34)
+
+boxplot(as.numeric(wech.totalds.scs) ~ Group.ITT, data = temp34, pch=16, cex=0.6,
+        ylab ="Wechsler test scores")
+
+#t.test(as.numeric(wech.totalds.scs) ~ as.character(Risk), data=temp34, alternative="less")
+#t.test(as.numeric(wj3.audwm.ss) ~ as.character(Risk), data=temp34)
+
+
+#t1 <- as.numeric(subset(temp34, Group.ITT == "LR<20")[,2])
+#t2 <- as.numeric(subset(temp34, Group.ITT == "LR>=20")[,2])
+#t3 <- as.numeric(subset(temp34, Group.ITT == "SHR<27")[,2])
+#t4 <- as.numeric(subset(temp34, Group.ITT == "SHR>=27")[,2])
+
+#t.test(t1, t2, var.equal = T)
+#t.test(t2, t3, var.equal = T, alternative = "less")
+#t.test(t1, t3, var.equal = T, alternative ="less")
+#t.test(t4, t3, var.equal = T, alternative ="less")
+#t.test(t1, t4, var.equal = T)
+#t.test(t2, t4, var.equal = T, alternative = "less")
+
+roi_diff_reg <- NA
+
+for (j in 1:nrow(roi_diff21)) {
+  
+  if(roi_diff21$Edges[j] %in% wmem_edges) {
+  y1d <- y_diff[roi_diff21$Row[j], roi_diff21$Column[j], ]
+  yd <- subset(y1d, names(y1d) %in% temp34$MRN)
+  
+  dat10 <- cbind.data.frame(temp34, "Connectivity difference"= yd, 
+                "Wechsler"= as.numeric(temp34$wech.totalds.scs) )
+  
+  #ft <- (lm(`Wechsler` ~ yd*Group.ITT, data = dat10))
+  #ft1 <- (lm(`Wechsler` ~ yd+ Group.ITT, data = dat10))
+
+  #aoft <- anova(ft, ft1)
+  #print(aoft$`Pr(>F)`[2])
+  ft_summ <- summary(lm(`Wechsler` ~ yd*Group.ITT, data = dat10))
+  ft1_summ <- summary(lm(`Wechsler` ~ yd+ Group.ITT, data = dat10))
+
+  #Fpv <- pf(ft_summ$fstatistic[1], ft_summ$fstatistic[2], ft_summ$fstatistic[3], lower.tail = F)
+  Fpv1 <- pf(ft1_summ$fstatistic[1], ft1_summ$fstatistic[2], ft1_summ$fstatistic[3], lower.tail = F)
+  #print(Fpv1)
+  # 
+  if(Fpv1 < 0.05) {
+  #print(j)
+  roi_diff_reg <- rbind.data.frame(roi_diff_reg, data.frame("Edge"= roi_diff21$Edges[j],
+                                                          "Row"= roi_diff21$Row[j],
+                                                          "Column"= roi_diff21$Column[j],
+                                                          "Intercept"= ft1_summ$coefficients[1,1],
+                                                          "Connectivity"= ft1_summ$coefficients[2,1],
+                                                          "pvalue"= ft1_summ$coefficients[2,4],
+                                                          "LR,ITTge20"= ft1_summ$coefficients[3,1],
+                                                          "pvalue"= ft1_summ$coefficients[3,4],
+                                                          "SHR,ITTle26"= ft1_summ$coefficients[4,1],
+                                                          "pvalue"= ft1_summ$coefficients[4,4],
+                                                          "SHR,ITTge27"= ft1_summ$coefficients[5,1],
+                                                          "pvalue"= ft1_summ$coefficients[5,4],
+                                                    #"Yd:LR,ITTge20"= ft1_summ$coefficients[6,1],
+                                                    #"Yd:SHR,ITTle26"= ft1_summ$coefficients[7,1],
+                                                    #"Yd:SHR,ITTge27"=ft1_summ$coefficients[8,1],
+                                                          "Adj.R2"= ft1_summ$adj.r.squared,
+                                                          "Fpvalue"=Fpv1))
+  
+  }
+  }
+}
+
+#j<- j+1
+roi_diff_reg <- roi_diff_reg[-1, ]
+
+```
+
+Hence the SHR group with lower intensity dose ($ITT < 27$) are doing best in terms of Wechsler's score, their distribution is significantly greater than SHR group with $ITT \ge 27$, LR group with $ITT < 20,$ but not significantly different from the group LR with $ITT \ge 20.$
+
+However, among the working memory edges, no significant interaction is found between the connectivity difference and the Risk & ITT groups.  
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+# we order the connectivity edges by the decreasing order the adjusted R-squared of the regression
+roi_diff_reg2 <- roi_diff_reg[order(-roi_diff_reg$Adj.R2), ]
+
+y1d <- y_diff[roi_diff_reg2$Row[1], roi_diff_reg2$Column[1], ]
+yd <- subset(y1d, names(y1d) %in% temp34$MRN)
+
+dat10 <- cbind.data.frame(temp34, "Connectivity difference"= yd, 
+          "Wechsler"= as.numeric(temp34$wech.totalds.scs))
+
+ft <- (lm(`Wechsler` ~ `Connectivity difference` + Group.ITT, data = dat10))
+
+ft_summ <- summary(ft)
+```
+
+#### Interaction plot at Left Area IntraParietal 2 vs. Left Area Lateral IntraParietal dorsal, adjusted $R^2=5\%$
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+interact_plot(model =ft,  pred = `Connectivity difference`, 
+                            modx = Group.ITT, interval =TRUE)
+
+```
+
+#### Interaction plot at Right Area 6 Anterior vs. Right Frontal Eye Fields, adjusted $R^2=5\%$
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+y1d <- y_diff[roi_diff_reg2$Row[2], roi_diff_reg2$Column[2], ]
+yd <- subset(y1d, names(y1d) %in% temp34$MRN)
+
+dat10 <- cbind.data.frame(temp34, "Connectivity difference"= yd, 
+          "Wechsler"= as.numeric(temp34$wech.totalds.scs))
+
+ft <- (lm(`Wechsler` ~ `Connectivity difference` +Group.ITT, data = dat10))
+
+ft_summ <- summary(ft)
+
+interact_plot(model =ft,  pred = `Connectivity difference`, 
+                            modx = Group.ITT, interval =TRUE)
+
+```
+ 
+In both these edges, the connectivity difference is significant covariate to the Wechsler score with p-values $\approx 0.07.$ For the other edges, the p-value of the connectivity difference is even higher, hence not considered here for discussion.
+
+For the auditory working memory, we have the following test scores:
+
+  - Ommissions score (higher is worse)
+  - Hit reaction time score (higher is worse)
+  - Variability score (higher is worse)
+  - Detection score (higher is worse)
+  - Response style score (higher is worse)
+
+However, no connectivity edges related to the functionality of attention were found where the regression was significant.
+
+```{r, echo=FALSE, eval=FALSE}
+
+# brain edges related to attention
+att_edges <- c(172,125,122,67,137,456,495,463,74,169,345,458,504,410,498,126,130,496)
+
+i<- 17 # obtain the WJ3 auditory memory score: higher is better
+
+temp30 <- ndat[, c(1,i)]  # choose the neurocog score and the MRN variable
+
+# choose the neurocog scores that are non-empty
+temp31 <- temp30[which(temp30[,2] != "."), ]
+
+#mrn31 <- temp31$MRN  # get MRNs for patients whose neurocog scores are non-empty
+
+#temp32 <- X3[, c(1,8)]
+
+#temp33 <- merge(temp31, temp32, by= "MRN")[, c(1,2)]
+#temp34 <- merge(temp33, Xdat, by= "MRN")
+temp34 <- merge(temp31, Xdat, by= "MRN")
+#temp35 <- na.omit(temp34)
+
+boxplot(as.numeric(cpt.beta.t) ~ Group.ITT, data = temp34, pch=16, cex=0.6,
+        ylab ="Variability test scores")
+
+t.test(as.numeric(cpt.beta.t) ~ as.character(Risk), data=temp34, alternative="two.sided")
+#t.test(as.numeric(wj3.audwm.ss) ~ as.character(Risk), data=temp34)
+
+
+t1 <- as.numeric(subset(temp34, Group.ITT == "LR<20")[,2])
+t2 <- as.numeric(subset(temp34, Group.ITT == "LR>=20")[,2])
+t3 <- as.numeric(subset(temp34, Group.ITT == "SHR<27")[,2])
+t4 <- as.numeric(subset(temp34, Group.ITT == "SHR>=27")[,2])
+
+t.test(t1, t2, var.equal = T)
+t.test(t2, t3, var.equal = T)
+t.test(t1, t3, var.equal = T)
+t.test(t4, t3, var.equal = T)
+t.test(t1, t4, var.equal = T)
+t.test(t2, t4, var.equal = T)
+
+roi_diff_reg <- NA
+
+for (j in 1:nrow(roi_diff21)) {
+  
+  #if(roi_diff21$Edges[j] %in% att_edges) 
+  {
+  y1d <- y_diff[roi_diff21$Row[j], roi_diff21$Column[j], ]
+  yd <- subset(y1d, names(y1d) %in% temp34$MRN)
+  
+  dat10 <- cbind.data.frame(temp34, "Connectivity difference"= yd, 
+                "beta"= as.numeric(temp34$cpt.beta.t) )
+  
+  ft <- (lm(`beta` ~ yd*Group.ITT, data = dat10))
+  ft1 <- (lm(`beta` ~ yd+Group.ITT, data = dat10))
+
+  aoft <- anova(ft, ft1)
+  #print(aoft$`Pr(>F)`[2])
+  ft_summ <- summary(lm(`beta` ~ yd*Group.ITT, data = dat10))
+  ft1_summ <- summary(lm(`beta` ~ yd+ Group.ITT, data = dat10))
+
+  #Fpv <- pf(ft_summ$fstatistic[1], ft_summ$fstatistic[2], ft_summ$fstatistic[3], lower.tail = F)
+  Fpv1 <- pf(ft1_summ$fstatistic[1], ft1_summ$fstatistic[2], ft1_summ$fstatistic[3], lower.tail = F)
+  #print(Fpv1)
+  # 
+  if(Fpv1<0.05) {
+  print(j)
+  roi_diff_reg <- rbind.data.frame(roi_diff_reg, data.frame("Edge"= roi_diff21$Edges[j],
+                                                          "Row"= roi_diff21$Row[j],
+                                                          "Column"= roi_diff21$Column[j],
+                                                          "Intercept"= ft1_summ$coefficients[1,1],
+                                                          "Connectivity"= ft1_summ$coefficients[2,1],
+                                                          "pvalue"= ft1_summ$coefficients[2,4],
+                                                          "LR,ITTge20"= ft1_summ$coefficients[3,1],
+                                                          "pvalue"= ft1_summ$coefficients[3,4],
+                                                          "SHR,ITTle26"= ft1_summ$coefficients[4,1],
+                                                          "pvalue"= ft1_summ$coefficients[4,4],
+                                                          "SHR,ITTge27"= ft1_summ$coefficients[5,1],
+                                                          "pvalue"= ft1_summ$coefficients[5,4],
+                                                    #"Yd:LR,ITTge20"= ft1_summ$coefficients[6,1],
+                                                    #"Yd:SHR,ITTle26"= ft1_summ$coefficients[7,1],
+                                                    #"Yd:SHR,ITTge27"=ft1_summ$coefficients[8,1],
+                                                          "Adj.R2"= ft1_summ$adj.r.squared,
+                                                          "Fpvalue"= Fpv1))
+  
+  }
+  }
+}
+
+#j<- j+1
+roi_diff_reg <- roi_diff_reg[-1, ]
+
+# we order the connectivity edges by the decreasing order the adjusted R-squared of the regression
+roi_diff_reg2 <- roi_diff_reg[order(-roi_diff_reg$Adj.R2), ]
+
+```
+
